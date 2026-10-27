@@ -47,7 +47,7 @@ jobs:
           gradle-version: 8.7
 
       - name: Build APK
-        run: gradle assembleRelease --no-daemon --stacktrace
+       run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
         env:
           KS_PASS: venice123
           KS_ALIAS: venice
